@@ -1,66 +1,73 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const Stripe = require("stripe");
-const { ethers } = require("ethers");
-require("dotenv").config();
+const express = require('express');
+const bodyParser = require('body-parser');
+const { ethers } = require('ethers');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const abi = require('./abi.json');
 
 const app = express();
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
-const PORT = process.env.PORT || 3000;
-
-const abi = [
-  "function safeMint(address to, string memory uri) public returns (uint256)"
-];
-
 const contractAddress = process.env.CONTRACT_ADDRESS;
-const provider = new ethers.JsonRpcProvider("https://polygon-rpc.com");
+const provider = new ethers.JsonRpcProvider('https://polygon-rpc.com');
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
 const contract = new ethers.Contract(contractAddress, abi, wallet);
 
-app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+app.use(bodyParser.raw({ type: 'application/json' }));
+
+app.get('/', (req, res) => {
+  res.send('✅ Server running');
+});
+
+app.post('/webhook', async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+
   let event;
 
   try {
-    const sig = req.headers["stripe-signature"];
     event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    console.log(`📦 Stripe event received: ${event.type}`);
   } catch (err) {
-    console.error("Webhook signature verification failed:", err.message);
+    console.error('❌ Webhook signature verification failed:', err.message);
     return res.sendStatus(400);
   }
 
-  if (event.type === "checkout.session.completed") {
+  if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
+    const amount = session.amount_total / 100;
+    const walletAddress = session.metadata?.wallet;
 
-    const metadata = session.metadata || {};
-    const walletAddress = metadata.wallet;
-    const amount = session.amount_total;
+    console.log(`💰 Payment received: $${amount}`);
+    console.log(`🎯 Wallet to mint to: ${walletAddress}`);
 
-    let tokenURI;
-    if (amount === 8000) tokenURI = "ipfs://bafkreigkklmr5jyc62osvw3eq6zg2rc4ptocibfryncek3oge4p33xujzq";
-    else if (amount === 15000) tokenURI = "ipfs://bafkreie3isvhwhzn2yvg4eiuvzwbmnla3wwww5dd6gl233dx5hk3newbvy";
-    else if (amount === 25000) tokenURI = "ipfs://bafkreib2omhppf7wntque4xaal5wn37hr5mjbx36nxhmdeorsqmic4dayi";
+    if (!walletAddress || !ethers.isAddress(walletAddress)) {
+      console.error('❌ Invalid or missing wallet address in metadata');
+      return res.sendStatus(400);
+    }
 
-    if (walletAddress && tokenURI) {
-      try {
-        const tx = await contract.safeMint(walletAddress, tokenURI);
-        await tx.wait();
-        console.log(`✅ Minted NFT for ${walletAddress}`);
-      } catch (err) {
-        console.error("❌ Error minting NFT:", err);
-      }
+    let uri;
+
+    if (amount === 80) {
+      uri = 'ipfs://bafkreigkklmr5jyc62osvw3eq6zg2rc4ptocibfryncek3oge4p33xujzq';
+    } else if (amount === 150) {
+      uri = 'ipfs://bafkreie3isvhwhzn2yvg4eiuvzwbmnla3wwww5dd6gl233dx5hk3newbvy';
+    } else if (amount === 250) {
+      uri = 'ipfs://bafkreib2omhppf7wntque4xaal5wn37hr5mjbx36nxhmdeorsqmic4dayi';
     } else {
-      console.warn("⚠️ Missing wallet address or token URI");
+      console.error('❌ Unknown payment amount');
+      return res.sendStatus(400);
+    }
+
+    try {
+      const tx = await contract.safeMint(walletAddress, uri);
+      console.log(`✅ Minted NFT! Tx: ${tx.hash}`);
+    } catch (err) {
+      console.error('❌ Minting failed:', err);
     }
   }
 
-  res.sendStatus(200);
+  res.status(200).send('OK');
 });
 
-app.get("/", (req, res) => {
-  res.send("🎉 NFT Stripe backend is live!");
-});
-
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
